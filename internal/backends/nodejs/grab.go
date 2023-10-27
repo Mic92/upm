@@ -1,7 +1,6 @@
 package nodejs
 
 import (
-	"context"
 	"log"
 	"os"
 	"path"
@@ -10,7 +9,6 @@ import (
 
 	"github.com/replit/upm/internal/api"
 	"github.com/replit/upm/internal/util"
-	sitter "github.com/smacker/go-tree-sitter"
 	"github.com/smacker/go-tree-sitter/javascript"
 )
 
@@ -62,7 +60,7 @@ type parseResult struct {
 	ok          bool
 }
 
-func parseFile(contents []byte, results chan parseResult) {
+func parseFile(path string, results chan parseResult) {
 	language := javascript.GetLanguage()
 
 	// NOTE: only `@import` tags are handled.
@@ -77,51 +75,15 @@ func parseFile(contents []byte, results chan parseResult) {
  (#eq? @function "require"))
 `
 
-	query, err := sitter.NewQuery([]byte(importsQuery), language)
+	importPaths, err := util.QueryImportsFromTreeSitter(path, language, importsQuery)
 	if err != nil {
-		// This should never happen - the query is hardcoded
-		log.Fatalln(err, importsQuery)
+		log.Println("failed to guess imports from", path, ":", err)
 	}
 
-	qc := sitter.NewQueryCursor()
-
-	node, err := sitter.ParseCtx(context.Background(), contents, language)
-	if err != nil {
-		results <- parseResult{nil, false}
-		return
+	results <- parseResult{
+		importPaths: importPaths,
+		ok:          err == nil,
 	}
-
-	qc.Exec(query, node)
-
-	importPaths := []string{}
-	for {
-		match, ok := qc.NextMatch()
-		if !ok {
-			break
-		}
-
-		match = qc.FilterPredicates(match, contents)
-		if len(match.Captures) == 0 {
-			continue
-		}
-
-		var importPath string
-		for _, capture := range match.Captures {
-			if query.CaptureNameForId(capture.Index) == "import" {
-				importPath = capture.Node.Content(contents)
-				break
-			}
-		}
-
-		if importPath == "" {
-			// shouldn't happen, with the way the query is written and handled.
-			util.Die("Failed to parse import path")
-		}
-
-		importPaths = append(importPaths, strings.Trim(importPath, "'\"`"))
-	}
-
-	results <- parseResult{importPaths, true}
 }
 
 func guessBareImports() map[api.PkgName]bool {
@@ -159,13 +121,8 @@ func guessBareImports() map[api.PkgName]bool {
 				continue
 			}
 
-			contents, err := os.ReadFile(absPath)
-			if err != nil {
-				log.Fatalln(err)
-			}
-
 			numParsedFiles++
-			go parseFile(contents, results)
+			go parseFile(absPath, results)
 		}
 	}
 
